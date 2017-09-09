@@ -13,15 +13,17 @@ import gym
 import tensorflow as tf
 import torch
 
+sys.path.append('./RL/ActorCriticGymTest')
 from PolicyNet import Policy
 
-sys.path.append('../')
+sys.path.append('utils')
 from logger import Logger
+from gpu_usage import get_gpumemory_usage
 
 import multiprocessing
 CORES = int(float(multiprocessing.cpu_count())*0.75)
 
-env = gym.make('LunaLander-v1')
+env = gym.make('CartPole-v0')
 env.seed(1)
 torch.manual_seed(1)
 
@@ -45,7 +47,7 @@ if GPU_ID is not None:
     os.environ["CUDA_VISIBLE_DEVICES"]=str(GPU_ID)
 
 ########### set some parameters ##################
-checkpointFold = checkfold+'/'
+checkpointFold = 'LunaLander'+checkfold+'/'
 if not os.path.exists(checkpointFold+'/logs_policy'):
     os.makedirs(checkpointFold+'/logs_policy')
 
@@ -56,8 +58,9 @@ policy = Policy(actions=2,encode_size=4*past,LR=LR,use_gpu=USE_GPU)
 print 'initialized Policy network'
 
 ########## Train model #####################
+running_reward = 10
 T = 10000
-for i_episode in range(10):
+for i_episode in range(10000):
     state = env.reset()
     batch = [np.zeros([1,state.shape[0]])]*(past-1)
     batch.append(state[np.newaxis,:])
@@ -72,17 +75,23 @@ for i_episode in range(10):
         if len(batch)>=past:
             del batch[0]
         
-        if t%10==0:
-            print reward
-        
         if done:
             break
     
+    running_reward = running_reward * 0.99 + t * 0.01
     d_reward, value = policy.finish_episode()
     
-    logger_p.scalar_summary('reward', reward, i_episode)
+    logger_p.scalar_summary('running_reward', running_reward, i_episode)
+    logger_p.scalar_summary('discounted_reward', np.mean(d_reward), i_episode)
     logger_p.scalar_summary('state_value_loss', value, i_episode)
     
-    if i_episode%50==0:
-        print 'Episode %d, Done in %d iterations, Reward %.2f'%(i_episode,t+1, reward)
+    mem = get_gpumemory_usage()
+    logger_p.scalar_summary('memory_usage', mem, i_episode)
     
+    if i_episode%50==0:
+        print 'Episode %d, Done in %d iterations, Running Reward %.2f, discounted Reward %.2f'%(i_episode,t+1, running_reward, np.mean(d_reward))
+    
+    if running_reward > env.spec.reward_threshold:
+        print("Solved! Running reward is now {} and "
+              "the last episode runs to {} time steps!".format(running_reward, t))
+        break
