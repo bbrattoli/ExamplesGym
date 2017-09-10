@@ -29,7 +29,6 @@ class Policy():
         self.criterion = nn.CrossEntropyLoss()
         self.value_criterion = nn.MSELoss()
         
-        #self.optimizer = optim.SGD(self.net.parameters(),lr=LR,momentum=0.9,weight_decay = 0.0005)
         self.optimizer = optim.Adam(self.net.parameters(), lr=LR)
         
         self.saved_state_values = []
@@ -51,19 +50,15 @@ class Policy():
         
         rewards = (rewards - rewards.mean()) / (rewards.std() + np.finfo(np.float32).eps)
         for action, reward, value in zip(self.saved_actions, rewards, self.saved_state_values):
-            if np.isnan(reward): reward=0
-            r = reward - value.data[0]
-            r = int(r)#torch.Tensor(r).cuda()
+            r = float(reward - value.data[0])
             action.reinforce(r)
             value_loss += self.value_criterion(value, Variable(torch.Tensor([reward])).cuda())
         
         #torch.cuda.LongTensor of size 1x1 (GPU 0)
-        #print value_loss
         self.optimizer.zero_grad()
         nodes = [value_loss.view(1,1).type(torch.cuda.LongTensor)] + self.saved_actions
         gradients = [torch.ones(1)] + [None] * len(self.saved_actions)
-        #nodes = [value_loss] + self.saved_actions
-        #print nodes.size()
+        
         autograd.backward(nodes, gradients)
         self.optimizer.step()
         
@@ -76,16 +71,20 @@ class Policy():
     def select_action(self,state,step):
         drop = max(0.35-float(step)/(self.drop_episode*3),0.00)
         
-        action_score, state_value = self.__forward(state)
+        state = Variable(state).float()
+        if self.use_gpu:
+            state = state.cuda()
+        
+        action_score, state_value  = self.net(state)
         
         action_score = F.dropout(action_score, drop, True) # Dropout for exploration
         action_score = F.softmax(action_score)
-        action = action_score.multinomial(self.actions,replacement=False)
+        action = action_score.multinomial()
         
         self.saved_actions.append(action)
         self.saved_state_values.append(state_value)
         
-        return action.cpu().data.numpy()
+        return action.cpu().data.numpy()[0]
     
     def save(self,checkpointFold,episode):
         state = {
@@ -99,25 +98,6 @@ class Policy():
     def load(self,checkpoint):
         state = torch.load(checkpoint)
         self.net.load_state_dict(state['state_dict'])
-    
-    def __forward(self,state):
-        self.net.init_hidden()
-        
-        if type(state) is np.ndarray:
-            state = torch.from_numpy(state)
-        
-        if not type(state) is torch.autograd.variable.Variable:
-            state = Variable(state)
-        
-        state = state.float()
-        if self.use_gpu:
-            state = state.cuda()
-        
-        out = self.net(state)
-        return out
-    
-    def __batch(self,data):
-        return data
 
 
 class PolicyNet(nn.Module):
@@ -152,16 +132,15 @@ class PolicyNet(nn.Module):
         self.value.add_module('value',nn.Linear(fc_v_hidden, 1))
     
     def forward(self, x):
+        x = x.view((1,-1))
         x = self.fc_in(x)
         
         ax = self.fc_a(x)
-#        ax = x
         action_scores = self.action(ax)
         
         vx = self.fc_v(x)
-#        vx = x
         state_value = self.value(vx)
-        return action_scores, state_value
+        return action_scores.view(-1), state_value.view(-1)
     
     def init_hidden(self):
         return

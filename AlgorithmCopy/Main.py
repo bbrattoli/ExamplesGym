@@ -20,7 +20,7 @@ sys.path.append('utils')
 import multiprocessing
 CORES = int(float(multiprocessing.cpu_count())*0.75)
 
-env = gym.make('CartPole-v0')
+env = gym.make('Copy-v0')
 outdir = '/tmp/MountainCarContinuous-agent-results'
 #env = wrappers.Monitor(env, directory=outdir, force=True)
 env.seed(1)
@@ -52,48 +52,41 @@ if not os.path.exists(checkpointFold+'/logs_policy'):
     os.makedirs(checkpointFold+'/logs_policy')
 
 ########## Initialize networks ##########
-S = env.observation_space.shape[0]
-try:
-    A = env.action_space.shape[0]
-except:
-    A = env.action_space.n
+S = 1
+A = 20
 
-policy = Policy(actions=A,encode_size=S*past,LR=LR,use_gpu=USE_GPU,drop_episode=20)
+policy = Policy(actions=A,encode_size=S*past,LR=LR,
+                use_gpu=USE_GPU,drop_episode=1000)
 print 'initialized Policy network'
 
 ########## Train model #####################
-running_reward = 10
-T = 10000
-for i_episode in range(10000):
+rewards = []
+for i_episode in xrange(100000):
     state = env.reset()
-    batch = [np.zeros([1,state.shape[0]])]*(past-1)
-    batch.append(state[np.newaxis,:])
     
+    cumulative_reward = 0
     t=-1
     done=False
     while(not done):
         t+=1
-        state = np.concatenate(batch,axis=0).reshape([-1])
-        state = torch.from_numpy(state)
-        action = policy.select_action(state,i_episode)        
+        action = policy.select_action(torch.Tensor([state]),i_episode)
+        action = np.unravel_index(action,[2,2,5])
+        #action = (1,1,state)
         
         state, reward, done, _ = env.step(action)
-        if i_episode%50==0 and i_episode>0 and args.render:
-            env.render()
+        cumulative_reward += reward
         
         policy.rewards.append(reward)
-        
-        batch.append(state[np.newaxis,:])
-        if len(batch)>=past:
-            del batch[0]
     
-    running_reward = running_reward * 0.99 + t * 0.01
+    rewards.append(cumulative_reward)
+    if args.render and i_episode%50==0:
+        env.render()
+    
     d_reward, value = policy.finish_episode()
     
     if i_episode%50==0:
-        print 'Episode %5d, %3d iter, Reward %3.1f, discounted Reward %3.1f'%(i_episode,t+1, running_reward, np.mean(d_reward))
+        print 'Episode %5d, %3d iter, Reward %3.1f, Discounted %3.1f'%(i_episode,t+1, np.mean(rewards[-100:]), np.mean(d_reward))
     
-    if running_reward > env.spec.reward_threshold:
-        print("Solved! Running reward is now {} and "
-              "the last episode runs to {} time steps!".format(running_reward, t))
+    if np.mean(rewards[-100:])>=25 and i_episode>100:
+        print 'Solved in %d episodes'%i_episode
         break
